@@ -1,0 +1,5 @@
+<prog> ::= <stmt>* '\EOF'
+<stmt> ::= (<identifier> '=')? <expr>
+<expr> ::= <term> (('+' | '-') <term>)*
+<term> ::= <factor> (('*' | '/' | '%') <factor>)*
+<factor> ::= <number> | <identifier> | '(' <expr> ')'
