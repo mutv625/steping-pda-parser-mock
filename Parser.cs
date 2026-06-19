@@ -3,20 +3,40 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 
-public interface IToken {}
+public interface IToken
+{
+    object? Value { get; }
+}
+
+public interface IToken<T> : IToken
+{
+    new T Value { get; }
+}
+
+public class Token<T> : IToken<T>
+{
+    public T Value { get; private set; }
+    object? IToken.Value => this.Value;
+
+    public Token(T value)
+    {
+        Value = value;
+    }
+}
 
 public class Parser // : IProcessable
 {
     // # パーサーの内部状態
     public ImmutableList<IToken> Tokens { get; private set; }
     public int PrtIndex { get; private set; } = 0;
+    public int PtrInc() => ++PrtIndex;
 
     // # パース待ちスタック
     Stack<IParseTask> _parseTasksStack = new();
 
     // # パース結果
     public INode ParentNode { get; init; }
-    public INode PointingNode { get; private set; }
+    public INode PointingNode { get; set; }
     
     public Parser(List<IToken> tokens, IParseTask initTask, INode initNode)
     {
@@ -30,25 +50,7 @@ public class Parser // : IProcessable
     public void Process()
     {
         // == プッシュダウンオートマトン的挙動
-        IParseTask task = _parseTasksStack.Pop();
-
-        switch (task)
-        {
-            case MatchTask matchTask
-            when matchTask.MatchingDict.RemainingCount == 1 || matchTask.Length == matchTask.ProgressCount:
-                _parseTasksStack.SinkRange(matchTask.MatchingDict.GetMatchedPattern());
-                break;
-            case ReturnTask returnTask:
-
-                break;
-            case ConsumeTask consumeTask:
-
-                break;
-            default:
-                List<IParseTask> retTasks = task.Process();
-                _parseTasksStack.SinkRange(retTasks);
-                break;
-        }
+        _parseTasksStack.SinkRange(_parseTasksStack.Pop().Process());
     }
 }
 
@@ -57,22 +59,25 @@ public interface INode
 {
     public INode ParentNode { get; }
     public bool IsClosed { get; }
+
+    /// <summary>
+    /// ノードの初期化処理として、親ノードを設定し、直属の子ノードの生成を行う。
+    /// （コンストラクタはこのノードの生成のみ、InitializeNodeメソッドで初期化処理を行う）
+    /// </summary>
+    /// <param name="parentNode"></param>
+    public void InitializeNode(INode parentNode);
     public string Serialize();
 }
 
-public interface ITerminal<T> : INode
+public interface IValueNode<T> : INode
 {
-    public T Value { get; }
-    public void Set(T element);
-}
-
-public interface IPolyTerminal<T> : ITerminal<T>
-{
-    public List<T> Values { get; }
-    new public void Set(T element);
+    public T Value { get; set; }
 }
 
 // == パースを待つブロックの定義
+/// <summary>
+/// 内部にパーサー持とうぜ
+/// </summary>
 public interface IParseTask
 {
     /// <summary>
@@ -82,12 +87,92 @@ public interface IParseTask
     public List<IParseTask> Process();
 }
 
+public abstract class UserTask : IParseTask
+{
+    Parser _parser;
+    INode _gotoNode;
+
+    public UserTask(Parser parser, INode gotoNode)
+    {
+        _parser = parser;
+        _gotoNode = gotoNode;
+    }
+
+    public List<IParseTask> Process()
+    {
+        _parser.PointingNode = _gotoNode;
+        return UserProcess();
+    }
+
+    public abstract List<IParseTask> UserProcess();
+}
+
+class SetValueTask<T> : IParseTask
+{
+    Parser _parser;
+
+    public SetValueTask(Parser self)
+    {
+        _parser = self;
+    }
+
+    public List<IParseTask> Process()
+    {
+        IToken currentToken = _parser.Tokens[_parser.PrtIndex];
+        
+        switch (currentToken)
+        {
+            case Token<T> tToken when _parser.PointingNode is IValueNode<T> valueNode:
+                valueNode.Value = tToken.Value;
+                break;
+            default:
+                throw new Exception("Unexpected token type. Expected: " + typeof(T).Name + ", but got: " + currentToken.GetType().Name);
+        }
+        _parser.PtrInc();
+        return new List<IParseTask>() {new ReturnTask(_parser)};
+    }
+}
+
+class ReturnTask : IParseTask
+{
+    Parser _parser;
+
+    public ReturnTask(Parser self)
+    {
+        _parser = self;
+    }
+
+    public List<IParseTask> Process()
+    {
+        _parser.PointingNode = _parser.PointingNode.ParentNode;
+        return new List<IParseTask>();
+    }
+}
+
+// ! Goto!! やばそ～
+class GotoTask : IParseTask
+{
+    Parser _parser;
+    INode _targetNode;
+
+    public GotoTask(INode targetNode, Parser self)
+    {
+        _targetNode = targetNode;
+        _parser = self;
+    }
+
+    public List<IParseTask> Process()
+    {
+        _parser.PointingNode = _targetNode;
+        return new List<IParseTask>();
+    }
+}
 
 class MatchTask : IParseTask
 {
     public int Length { get; init; }
     public int ProgressCount { get; private set; }
-    public MatchDict MatchingDict { get; init; }
+    public MatchDict TaskMatchDict { get; init; }
 
     Parser _parser;
 
@@ -95,34 +180,27 @@ class MatchTask : IParseTask
     {
         Length = length;
         ProgressCount = 0;
-        MatchingDict = matchDict;
+        TaskMatchDict = matchDict;
         _parser = self;
     }
 
     public List<IParseTask> Process()
     {
-        MatchingDict.Match(ProgressCount, _parser.Tokens[_parser.PrtIndex]);
-        ProgressCount++;
+        if (ProgressCount >= Length)
+        {
+            return TaskMatchDict.GetMatchedPattern();
+        }
+        else if (_parser.PrtIndex + ProgressCount >= _parser.Tokens.Count)
+        {
+            throw new Exception("Unexpected end of tokens. Expected more tokens to match the pattern.");
+        }
+        else
+        {            
+            TaskMatchDict.Match(ProgressCount, _parser.Tokens[_parser.PrtIndex + ProgressCount]);
+            ProgressCount++;
 
-        return new List<IParseTask>(){this};
-    }
-}
-
-class ConsumeTask : IParseTask
-{
-    public List<IParseTask> Process()
-    {
-        // 形だけ
-        return new List<IParseTask>();
-    }
-}
-
-class ReturnTask : IParseTask
-{
-    public List<IParseTask> Process()
-    {
-        // 形だけ
-        return new List<IParseTask>();
+            return new List<IParseTask>() { this };
+        }
     }
 }
 
