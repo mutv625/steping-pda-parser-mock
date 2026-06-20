@@ -22,14 +22,17 @@ namespace Parse01
                 new ValueToken<int>(10),          // <int>
                 new CommaToken(),                 // ','
                 new ValueToken<int>(20),          // <int>
+                new CommaToken(),                 // ','
+                new ValueToken<int>(0),          // <int>
                 new CloseParenToken()             // ')'
             };
 
-            Console.WriteLine("入力トークン: myFunc(10, 20)");
+            Console.WriteLine("入力トークン: myFunc(10, 20, 0)");
 
             // -------------------------------------------------------------
             // 2. 構文ノードの初期化
             // -------------------------------------------------------------
+            // TODO RootNode の扱いと初期化における強制
             var rootNode = new MethodCallNode(parentNode: null);
 
             // -------------------------------------------------------------
@@ -51,15 +54,24 @@ namespace Parse01
             try
             {
                 int step = 1;
+                bool isFinalStep = false;
                 // スタックが空になるまで、1ステップずつ Process() を回す
-                while (!parser.IsParseTasksEmpty)
+                while (!isFinalStep)
                 {
+                    
+                        
                     // デバッグ用：現在のポインタ位置とスタック数を可視化
                     Console.WriteLine($"[Step {step:D2}] PointingNode: {parser.PointingNode.GetType().Name,-18}");
                     Console.WriteLine($"          | Next Token ({parser.PtrIndex}): {(parser.PtrIndex < parser.Tokens.Count ? parser.Tokens[parser.PtrIndex].GetType().GetPrettyName() : "EOF"),-18}");
                     Console.WriteLine($"          | Call Stack ({parser.ParseTasksStack.Count}) [[ {string.Join(" <- ", parser.ParseTasksStack.Reverse().Select(t => t.GetType().GetPrettyName()))}");
 
                     Console.WriteLine($"          | JSON: {rootNode.Serialize()}");
+
+                    if (parser.IsParseTasksEmpty)
+                    {
+                        isFinalStep = true;
+                        break;
+                    }
                     
                     parser.Process();
                     step++;
@@ -170,9 +182,12 @@ namespace Parse01
                 // ★基盤の共通化のおかげで、ValueListNode をそのまま直接渡せる！
                 new ParseValueTask<ValueToken<int>, int>(_parser, _workingMethodNode.Arguments!),
                 
-                // 4. ( ',' <int> )* のループ制御タスクへ移行
+                // 4. ( ',' <int> )* ')' のループ + 閉じ括弧判定・制御タスクへ移行
                 // ★ 第2引数に _workingMethodNode を指定してタスクを作成
-                new ArgLoopDecisionTask(_parser, _workingMethodNode, _workingMethodNode.Arguments!)
+                new ArgLoopDecisionTask(_parser, _workingMethodNode, _workingMethodNode.Arguments!),
+
+                // 5. 全部終わったら本来return（今回はrootの設定がガバなので飛ばす）
+                // new ReturnTask(_parser)
             };
         }
     }
@@ -210,7 +225,6 @@ namespace Parse01
                     .FollowedBy(new List<IParseTask>
                     {
                         new ExpectTokenTask<CloseParenToken>(_parser),
-                        new ReturnTask(_parser) 
                     })
             });
 
