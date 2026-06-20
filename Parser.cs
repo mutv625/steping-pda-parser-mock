@@ -31,29 +31,48 @@ public class Parser // : IProcessable
 {
     // # パーサーの内部状態
     public ImmutableList<IToken> Tokens { get; private set; }
-    public int PtrIndex { get; private set; } = 0;
+    public int PtrIndex { get; private set; }
     public int PtrInc() => ++PtrIndex;
 
     // # パース待ちスタック
     Stack<IParseTask> _parseTasksStack = new();
+    public IReadOnlyCollection<IParseTask> ParseTasksStack => _parseTasksStack.ToList().AsReadOnly();
+    public bool IsParseTasksEmpty => _parseTasksStack.Count == 0;
 
     // # パース結果
-    public BaseNode ParentNode { get; init; }
+    public BaseNode RootNode { get; private set; }
     public BaseNode PointingNode { get; set; }
     
-    public Parser(List<IToken> tokens, IParseTask initTask, BaseNode initNode)
+    public Parser()
+    {
+        Tokens = ImmutableList<IToken>.Empty;
+        PtrIndex = 0;
+        RootNode = null!;
+        PointingNode = null!;
+    }
+
+    bool _isInitialized = false;
+
+    public void Initialize(List<IToken> tokens, IParseTask initTask, BaseNode initNode)
     {
         Tokens = tokens.ToImmutableList();
+        _parseTasksStack.Clear();
         _parseTasksStack.Push(initTask);
 
-        ParentNode = initNode;
+        PtrIndex = 0;
+
+        RootNode = initNode;
         PointingNode = initNode;
 
-        ParentNode.OnVisit();
+        RootNode.OnVisit();
+
+        _isInitialized = true;
     }
 
     public void Process()
     {
+        if (!_isInitialized) throw new InvalidOperationException("Parser is not initialized. Please call Initialize() before Process().");
+
         // == プッシュダウンオートマトン的挙動
         _parseTasksStack.SinkRange(_parseTasksStack.Pop().Process());
     }
@@ -106,13 +125,24 @@ public abstract class BaseNode
     public abstract string Serialize();
 }
 
-public class ValueNode<T> : BaseNode
+public abstract class ValueSettableNode<T> : BaseNode
+{
+    public ValueSettableNode(BaseNode? parentNode) : base(parentNode) { }
+    public abstract void SetValue(T value);
+}
+
+public class ValueNode<T> : ValueSettableNode<T>
 {
     /// <summary>
     /// このノードが保持する値
     /// 未設定の場合はnullを返す
     /// </summary>
-    public T? Value { get; set; }
+    public T? Value { get; private set; }
+
+    public override void SetValue(T value)
+    {
+        Value = value;
+    }
 
     public ValueNode(BaseNode parentNode) : base(parentNode)
     {
@@ -130,13 +160,19 @@ public class ValueNode<T> : BaseNode
     }
 }
 
-public class ValueListNode<T> : BaseNode
+public class ValueListNode<T> : ValueSettableNode<T>
 {
-    public List<T> Values { get; private set; }
+    List<T> _values;
+    public IReadOnlyList<T> Values { get => _values; }
+
+    public override void SetValue(T value)
+    {
+        _values.Add(value);
+    }
 
     public ValueListNode(BaseNode parentNode) : base(parentNode)
     {
-        Values = new List<T>();
+        _values = new List<T>();
     }
 
     protected override void OnFirstVisit()
@@ -194,9 +230,9 @@ class ParseValueTask<TokenType, T> : IParseTask
     where TokenType : IToken<T>
 {
     readonly Parser _parser;
-    readonly ValueNode<T> _nodeToVisit;
+    readonly ValueSettableNode<T> _nodeToVisit;
 
-    public ParseValueTask(Parser p, ValueNode<T> nodeToVisit)
+    public ParseValueTask(Parser p, ValueSettableNode<T> nodeToVisit)
     {
         _parser = p;
         _nodeToVisit = nodeToVisit;
@@ -232,11 +268,8 @@ class SetValueTask<TokenType, T> : IParseTask
         switch (currentToken)
         {
             // TokenType (ValueToken<T>) であることが保証されているため、型安全に代入可能
-            case TokenType tToken when _parser.PointingNode is ValueNode<T> valueNode:
-                valueNode.Value = tToken.Value;
-                break;
-            case TokenType tToken when _parser.PointingNode is ValueListNode<T> valueListNode:
-                valueListNode.Values.Add(tToken.Value);
+            case TokenType tToken when _parser.PointingNode is ValueSettableNode<T> valueNode:
+                valueNode.SetValue(tToken.Value);
                 break;
             case TokenType:
                 throw new Exception($"Current pointing node cannot accept the token value. Token value type: {typeof(T).Name}, Pointing node type: {_parser.PointingNode.GetType().Name}");

@@ -8,5 +8,6 @@ public class Program
     public static void Main(string[] args)
     {
         // TODO テストのエントリーポイント
+        Parse01.Entry.Exec();
     }
 }
