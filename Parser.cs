@@ -28,8 +28,8 @@ public class Parser // : IProcessable
 {
     // # パーサーの内部状態
     public ImmutableList<IToken> Tokens { get; private set; }
-    public int PrtIndex { get; private set; } = 0;
-    public int PtrInc() => ++PrtIndex;
+    public int PtrIndex { get; private set; } = 0;
+    public int PtrInc() => ++PtrIndex;
 
     // # パース待ちスタック
     Stack<IParseTask> _parseTasksStack = new();
@@ -44,6 +44,7 @@ public class Parser // : IProcessable
         _parseTasksStack.Push(initTask);
 
         ParentNode = initNode;
+        ParentNode.InitializeNode(initNode);
         PointingNode = initNode;
     }
 
@@ -57,12 +58,16 @@ public class Parser // : IProcessable
 // == ノードの定義
 public interface INode
 {
+    /// <summary>
+    /// 親ノードを取得する
+    /// ルートノードの場合は自身を返す
+    /// </summary>
     public INode ParentNode { get; }
     public bool IsClosed { get; }
 
     /// <summary>
     /// ノードの初期化処理として、親ノードを設定し、直属の子ノードの生成を行う。
-    /// （コンストラクタはこのノードの生成のみ、InitializeNodeメソッドで初期化処理を行う）
+    /// （コンストラクタは子ノードの生成のみ、InitializeNodeメソッドで初期化処理を行う）
     /// </summary>
     /// <param name="parentNode"></param>
     public void InitializeNode(INode parentNode);
@@ -89,9 +94,10 @@ public interface IParseTask
 
 public abstract class UserTask : IParseTask
 {
-    Parser _parser;
-    INode _gotoNode;
+    readonly Parser _parser;
+    readonly INode _gotoNode;
 
+    /// <param name="gotoNode">このタスクのUserProcess()が実行される移動先ノード</param>
     public UserTask(Parser parser, INode gotoNode)
     {
         _parser = parser;
@@ -109,7 +115,7 @@ public abstract class UserTask : IParseTask
 
 class SetValueTask<T> : IParseTask
 {
-    Parser _parser;
+    readonly Parser _parser;
 
     public SetValueTask(Parser self)
     {
@@ -118,7 +124,7 @@ class SetValueTask<T> : IParseTask
 
     public List<IParseTask> Process()
     {
-        IToken currentToken = _parser.Tokens[_parser.PrtIndex];
+        IToken currentToken = _parser.Tokens[_parser.PtrIndex];
         
         switch (currentToken)
         {
@@ -133,9 +139,34 @@ class SetValueTask<T> : IParseTask
     }
 }
 
+class ExpectTokenTask<TokenType> : IParseTask where TokenType : IToken
+{
+    readonly Parser _parser;
+
+    public ExpectTokenTask(Parser self)
+    {
+        _parser = self;
+    }
+
+    public List<IParseTask> Process()
+    {
+        IToken currentToken = _parser.Tokens[_parser.PtrIndex];
+
+        if (currentToken is TokenType)
+        {
+            _parser.PtrInc();
+            return new List<IParseTask>() { new ReturnTask(_parser) };
+        }
+        else
+        {
+            throw new Exception("Unexpected token type. Expected: " + typeof(TokenType).Name + ", but got: " + currentToken.GetType().Name);
+        }
+    }
+}
+
 class ReturnTask : IParseTask
 {
-    Parser _parser;
+    readonly Parser _parser;
 
     public ReturnTask(Parser self)
     {
@@ -152,7 +183,7 @@ class ReturnTask : IParseTask
 // ! Goto!! やばそ～
 class GotoTask : IParseTask
 {
-    Parser _parser;
+    readonly Parser _parser;
     INode _targetNode;
 
     public GotoTask(INode targetNode, Parser self)
@@ -190,13 +221,13 @@ class MatchTask : IParseTask
         {
             return TaskMatchDict.GetMatchedPattern();
         }
-        else if (_parser.PrtIndex + ProgressCount >= _parser.Tokens.Count)
+        else if (_parser.PtrIndex + ProgressCount >= _parser.Tokens.Count)
         {
             throw new Exception("Unexpected end of tokens. Expected more tokens to match the pattern.");
         }
         else
         {            
-            TaskMatchDict.Match(ProgressCount, _parser.Tokens[_parser.PrtIndex + ProgressCount]);
+            TaskMatchDict.Match(ProgressCount, _parser.Tokens[_parser.PtrIndex + ProgressCount]);
             ProgressCount++;
 
             return new List<IParseTask>() { this };
