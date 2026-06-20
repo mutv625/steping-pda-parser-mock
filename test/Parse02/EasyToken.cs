@@ -3,7 +3,7 @@ using System.Collections.Generic;
 
 namespace Parse02
 {
-    class Entry
+    public class Entry
     {
         public static void Exec()
         {

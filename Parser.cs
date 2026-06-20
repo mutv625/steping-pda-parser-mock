@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 
+
+#region Token
 public interface IToken
 {
     object? Value { get; }
@@ -13,16 +15,17 @@ public interface IToken<T> : IToken
     new T Value { get; }
 }
 
-public class Token<T> : IToken<T>
+public class ValueToken<T> : IToken<T>
 {
     public T Value { get; private set; }
     object? IToken.Value => this.Value;
 
-    public Token(T value)
+    public ValueToken(T value)
     {
         Value = value;
     }
 }
+#endregion
 
 public class Parser // : IProcessable
 {
@@ -35,17 +38,18 @@ public class Parser // : IProcessable
     Stack<IParseTask> _parseTasksStack = new();
 
     // # パース結果
-    public INode ParentNode { get; init; }
-    public INode PointingNode { get; set; }
+    public BaseNode ParentNode { get; init; }
+    public BaseNode PointingNode { get; set; }
     
-    public Parser(List<IToken> tokens, IParseTask initTask, INode initNode)
+    public Parser(List<IToken> tokens, IParseTask initTask, BaseNode initNode)
     {
         Tokens = tokens.ToImmutableList();
         _parseTasksStack.Push(initTask);
 
         ParentNode = initNode;
-        ParentNode.InitializeNode(initNode);
         PointingNode = initNode;
+
+        ParentNode.OnVisit();
     }
 
     public void Process()
@@ -55,31 +59,101 @@ public class Parser // : IProcessable
     }
 }
 
+
 // == ノードの定義
-public interface INode
+#region Node
+public abstract class BaseNode
 {
     /// <summary>
     /// 親ノードを取得する
-    /// ルートノードの場合は自身を返す
+    /// ルートノードの場合はnullを返す
     /// </summary>
-    public INode ParentNode { get; }
-    public bool IsClosed { get; }
+    public BaseNode? ParentNode { get; }
+
+    public bool IsVisited { get; protected set; } = false;
+    public void MarkAsVisited() => IsVisited = true;
+
+    public bool IsClosed { get; } = false;
 
     /// <summary>
-    /// ノードの初期化処理として、親ノードを設定し、直属の子ノードの生成を行う。
-    /// （コンストラクタは子ノードの生成のみ、InitializeNodeメソッドで初期化処理を行う）
+    /// コンストラクタでは、親ノードの設定と、値の初期化のみを行う
     /// </summary>
     /// <param name="parentNode"></param>
-    public void InitializeNode(INode parentNode);
-    public string Serialize();
+    protected BaseNode(BaseNode? parentNode)
+    {
+        ParentNode = parentNode;
+    }
+
+    public void OnVisit()
+    {
+        if (!IsVisited)
+        {
+            OnFirstVisit();
+            MarkAsVisited();
+        }
+    }
+
+    /// <summary>
+    /// ノードの初期化処理として、直属の子ノードの生成（コンストラクタ呼び出し）を行う
+    /// </summary>
+    /// <param name="parentNode"></param>
+    protected abstract void OnFirstVisit();
+
+    /// <summary>
+    /// JSONとしてノードの内容を文字列化する
+    /// </summary>
+    /// <returns></returns>
+    public abstract string Serialize();
 }
 
-public interface IValueNode<T> : INode
+public class ValueNode<T> : BaseNode
 {
-    public T Value { get; set; }
+    /// <summary>
+    /// このノードが保持する値
+    /// 未設定の場合はnullを返す
+    /// </summary>
+    public T? Value { get; set; }
+
+    public ValueNode(BaseNode parentNode) : base(parentNode)
+    {
+        Value = default;
+    }
+
+    protected override void OnFirstVisit()
+    {
+        // * 値ノードは初期化時に子ノードを持たないため、特に何もしない
+    }
+
+    public override string Serialize()
+    {
+        return $"{{\"Value\": \"{Value?.ToString() ?? "null"}\"}}";
+    }
 }
 
-// == パースを待つブロックの定義
+public class ValueListNode<T> : BaseNode
+{
+    public List<T> Values { get; private set; }
+
+    public ValueListNode(BaseNode parentNode) : base(parentNode)
+    {
+        Values = new List<T>();
+    }
+
+    protected override void OnFirstVisit()
+    {
+        // * 値リストノードは初期化時に子ノードを持たないため、特に何もしない
+    }
+
+    public override string Serialize()
+    {
+        var serializedValues = string.Join(", ", Values.Select(v => $"\"{v?.ToString() ?? "null"}\""));
+        return $"{{\"Values\": [{serializedValues}]}}";
+    }
+}
+#endregion
+
+// == パースを行うタスクの定義
+#region Task
 /// <summary>
 /// 内部にパーサー持とうぜ
 /// </summary>
@@ -94,32 +168,61 @@ public interface IParseTask
 
 public abstract class UserTask : IParseTask
 {
-    readonly Parser _parser;
-    readonly INode _gotoNode;
+    protected readonly Parser _parser;
+    readonly BaseNode _nodeToVisit;
 
-    /// <param name="gotoNode">このタスクのUserProcess()が実行される移動先ノード</param>
-    public UserTask(Parser parser, INode gotoNode)
+    /// <param name="nodeToVisit">このタスクのUserProcess()が実行される移動先ノード</param>
+    public UserTask(Parser p, BaseNode nodeToVisit)
     {
-        _parser = parser;
-        _gotoNode = gotoNode;
+        _parser = p;
+        _nodeToVisit = nodeToVisit;
     }
 
     public List<IParseTask> Process()
     {
-        _parser.PointingNode = _gotoNode;
+        _parser.PointingNode = _nodeToVisit;
+        _parser.PointingNode.OnVisit();
+
         return UserProcess();
     }
 
     public abstract List<IParseTask> UserProcess();
 }
 
-class SetValueTask<T> : IParseTask
+// TokenType を受け取り、それが保持する値の型 T をコンパイラに特定させる
+class ParseValueTask<TokenType, T> : IParseTask 
+    where TokenType : IToken<T>
+{
+    readonly Parser _parser;
+    readonly ValueNode<T> _nodeToVisit;
+
+    public ParseValueTask(Parser p, ValueNode<T> nodeToVisit)
+    {
+        _parser = p;
+        _nodeToVisit = nodeToVisit;
+    }
+
+    public List<IParseTask> Process()
+    {
+        _parser.PointingNode = _nodeToVisit;
+        _parser.PointingNode.OnVisit();
+
+        return new List<IParseTask>
+        {
+            new SetValueTask<TokenType, T>(_parser),
+            new ReturnTask(_parser)
+        };
+    }
+}
+
+class SetValueTask<TokenType, T> : IParseTask 
+    where TokenType : IToken<T>
 {
     readonly Parser _parser;
 
-    public SetValueTask(Parser self)
+    public SetValueTask(Parser p)
     {
-        _parser = self;
+        _parser = p;
     }
 
     public List<IParseTask> Process()
@@ -128,14 +231,20 @@ class SetValueTask<T> : IParseTask
         
         switch (currentToken)
         {
-            case Token<T> tToken when _parser.PointingNode is IValueNode<T> valueNode:
+            // TokenType (ValueToken<T>) であることが保証されているため、型安全に代入可能
+            case TokenType tToken when _parser.PointingNode is ValueNode<T> valueNode:
                 valueNode.Value = tToken.Value;
                 break;
+            case TokenType tToken when _parser.PointingNode is ValueListNode<T> valueListNode:
+                valueListNode.Values.Add(tToken.Value);
+                break;
+            case TokenType:
+                throw new Exception($"Current pointing node cannot accept the token value. Token value type: {typeof(T).Name}, Pointing node type: {_parser.PointingNode.GetType().Name}");
             default:
-                throw new Exception("Unexpected token type. Expected: " + typeof(T).Name + ", but got: " + currentToken.GetType().Name);
+                throw new Exception("Unexpected token type. Expected: " + typeof(TokenType).Name + ", but got: " + currentToken.GetType().Name);
         }
         _parser.PtrInc();
-        return new List<IParseTask>() {new ReturnTask(_parser)};
+        return new List<IParseTask>();
     }
 }
 
@@ -143,9 +252,9 @@ class ExpectTokenTask<TokenType> : IParseTask where TokenType : IToken
 {
     readonly Parser _parser;
 
-    public ExpectTokenTask(Parser self)
+    public ExpectTokenTask(Parser p)
     {
-        _parser = self;
+        _parser = p;
     }
 
     public List<IParseTask> Process()
@@ -155,7 +264,7 @@ class ExpectTokenTask<TokenType> : IParseTask where TokenType : IToken
         if (currentToken is TokenType)
         {
             _parser.PtrInc();
-            return new List<IParseTask>() { new ReturnTask(_parser) };
+            return new List<IParseTask>();
         }
         else
         {
@@ -168,37 +277,27 @@ class ReturnTask : IParseTask
 {
     readonly Parser _parser;
 
-    public ReturnTask(Parser self)
+    public ReturnTask(Parser p)
     {
-        _parser = self;
+        _parser = p;
     }
 
     public List<IParseTask> Process()
     {
+        if (_parser.PointingNode.ParentNode == null)
+        {
+            throw new Exception("Cannot return from the root node. No parent node exists.");
+        }
+
         _parser.PointingNode = _parser.PointingNode.ParentNode;
         return new List<IParseTask>();
     }
 }
 
-// ! Goto!! やばそ～
-class GotoTask : IParseTask
-{
-    readonly Parser _parser;
-    INode _targetNode;
-
-    public GotoTask(INode targetNode, Parser self)
-    {
-        _targetNode = targetNode;
-        _parser = self;
-    }
-
-    public List<IParseTask> Process()
-    {
-        _parser.PointingNode = _targetNode;
-        return new List<IParseTask>();
-    }
-}
-
+/// <summary>
+/// ポインターを足止めし、ifのように先読みしてパターンを判定するタスク
+/// Match終了時に、マッチしたパターンに対応するタスクを返す（ポインター位置は変更されないことに注意）
+/// </summary>
 class MatchTask : IParseTask
 {
     public int Length { get; init; }
@@ -207,12 +306,12 @@ class MatchTask : IParseTask
 
     Parser _parser;
 
-    public MatchTask(int length, MatchDict matchDict, Parser self)
+    public MatchTask(Parser p, int length, MatchDict matchDict)
     {
         Length = length;
         ProgressCount = 0;
         TaskMatchDict = matchDict;
-        _parser = self;
+        _parser = p;
     }
 
     public List<IParseTask> Process()
@@ -234,8 +333,9 @@ class MatchTask : IParseTask
         }
     }
 }
+#endregion
 
-
+#region Pattern
 class MatchDict
 {
     List<LockedPatternList> _patterns;
@@ -332,3 +432,4 @@ public class PatternList
         return LockedPatternList.Create(_inner, followingParseTasks);
     }
 }
+#endregion
