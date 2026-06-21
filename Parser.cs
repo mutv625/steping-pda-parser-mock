@@ -40,8 +40,8 @@ public class Parser // : IProcessable
     public bool IsParseTasksEmpty => _parseTasksStack.Count == 0;
 
     // # パース結果
-    public BaseNode RootNode { get; private set; }
-    public BaseNode PointingNode { get; set; }
+    public BNode RootNode { get; private set; }
+    public BNode PointingNode { get; set; }
     
     public Parser()
     {
@@ -53,7 +53,7 @@ public class Parser // : IProcessable
 
     bool _isInitialized = false;
 
-    public void Initialize(List<IToken> tokens, IParseTask initTask, BaseNode initNode)
+    public void Initialize(List<IToken> tokens, IParseTask initTask, BNode initNode)
     {
         Tokens = tokens.ToImmutableList();
         _parseTasksStack.Clear();
@@ -81,13 +81,13 @@ public class Parser // : IProcessable
 
 // == ノードの定義
 #region Node
-public abstract class BaseNode
+public abstract class BNode
 {
     /// <summary>
     /// 親ノードを取得する
     /// ルートノードの場合はnullを返す
     /// </summary>
-    public BaseNode? ParentNode { get; }
+    public BNode? ParentNode { get; }
 
     public bool IsVisited { get; protected set; } = false;
     public void MarkAsVisited() => IsVisited = true;
@@ -98,7 +98,7 @@ public abstract class BaseNode
     /// コンストラクタでは、親ノードの設定と、値の初期化のみを行う
     /// </summary>
     /// <param name="parentNode"></param>
-    protected BaseNode(BaseNode? parentNode)
+    protected BNode(BNode? parentNode)
     {
         ParentNode = parentNode;
     }
@@ -125,9 +125,9 @@ public abstract class BaseNode
     public abstract string Serialize();
 }
 
-public abstract class ValueSettableNode<T> : BaseNode
+public abstract class ValueSettableNode<T> : BNode
 {
-    public ValueSettableNode(BaseNode? parentNode) : base(parentNode) { }
+    public ValueSettableNode(BNode? parentNode) : base(parentNode) { }
     public abstract void SetValue(T value);
 }
 
@@ -144,7 +144,7 @@ public class ValueNode<T> : ValueSettableNode<T>
         Value = value;
     }
 
-    public ValueNode(BaseNode parentNode) : base(parentNode)
+    public ValueNode(BNode parentNode) : base(parentNode)
     {
         Value = default;
     }
@@ -170,7 +170,7 @@ public class ValueListNode<T> : ValueSettableNode<T>
         _values.Add(value);
     }
 
-    public ValueListNode(BaseNode parentNode) : base(parentNode)
+    public ValueListNode(BNode parentNode) : base(parentNode)
     {
         _values = new List<T>();
     }
@@ -202,13 +202,13 @@ public interface IParseTask
     public List<IParseTask> Process();
 }
 
-public abstract class UserTask : IParseTask
+public abstract class CustomTask : IParseTask
 {
     protected readonly Parser _parser;
-    readonly BaseNode _nodeToVisit;
+    readonly BNode _nodeToVisit;
 
     /// <param name="nodeToVisit">このタスクのUserProcess()が実行される移動先ノード</param>
-    public UserTask(Parser p, BaseNode nodeToVisit)
+    public CustomTask(Parser p, BNode nodeToVisit)
     {
         _parser = p;
         _nodeToVisit = nodeToVisit;
@@ -225,6 +225,35 @@ public abstract class UserTask : IParseTask
     public abstract List<IParseTask> UserProcess();
 }
 
+/// <summary>
+/// 指定したノードにポインターを移動させ、そのノードで行うべきタスクをコールスタックに積む
+/// 文法をタスクの塊データとして組み立てられる
+/// </summary>
+public class NodeTask : IParseTask
+{
+    private Parser _parser;
+    private readonly BNode _nodeToVisit;
+    private readonly Func<List<IParseTask>> _childTasksFactory; // ★ List から Func<List> に変更
+
+    // コンストラクタで関数を受け取る
+    public NodeTask(Parser p, BNode nodeToVisit, Func<List<IParseTask>> childTasksFactory)
+    {
+        _parser = p;
+        _nodeToVisit = nodeToVisit;
+        _childTasksFactory = childTasksFactory;
+    }
+
+    public List<IParseTask> Process()
+    {
+        // 共通のポインタ移動処理
+        _parser.PointingNode = _nodeToVisit;
+        _parser.PointingNode.OnVisit();
+
+        // 登録されていたタスクリスト（データ）をそのまま返す！
+        return _childTasksFactory();
+    }
+}
+
 // TokenType を受け取り、それが保持する値の型 T をコンパイラに特定させる
 class ParseValueTask<TokenType, T> : IParseTask 
     where TokenType : IToken<T>
@@ -232,10 +261,10 @@ class ParseValueTask<TokenType, T> : IParseTask
     readonly Parser _parser;
     readonly ValueSettableNode<T> _nodeToVisit;
 
-    public ParseValueTask(Parser p, ValueSettableNode<T> nodeToVisit)
+    public ParseValueTask(Parser p, ValueSettableNode<T> nodeToSetValue)
     {
         _parser = p;
-        _nodeToVisit = nodeToVisit;
+        _nodeToVisit = nodeToSetValue;
     }
 
     public List<IParseTask> Process()

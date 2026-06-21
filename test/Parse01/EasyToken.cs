@@ -98,23 +98,6 @@ namespace Parse01
         }
     }
 
-    public static class TypeExtensions
-    {
-        public static string GetPrettyName(this Type type)
-        {
-            if (type.IsGenericType)
-            {
-                var genericArgs = type.GetGenericArguments().Select(t => t.GetPrettyName());
-                var name = type.GetGenericTypeDefinition().Name;
-                // ` の前の部分を取得
-                name = name.Substring(0, name.IndexOf('`'));
-                return $"{name}<{string.Join(", ", genericArgs)}>";
-            }
-            return type.Name;
-        }
-    }
-
-
     // == A. トークンの定義
 
     #region Additional Tokens
@@ -127,13 +110,13 @@ namespace Parse01
     // == B. 構文ノードの定義
 
     #region Custom Node
-    public class MethodCallNode : BaseNode
+    public class MethodCallNode : BNode
     {
         // 基盤側の ValueSettableNode<T> を内包する
         public ValueNode<string>? MethodName { get; private set; }
         public ValueListNode<int>? Arguments { get; private set; }
 
-        public MethodCallNode(BaseNode? parentNode) : base(parentNode) { }
+        public MethodCallNode(BNode? parentNode) : base(parentNode) { }
 
         protected override void OnFirstVisit()
         {
@@ -158,7 +141,7 @@ namespace Parse01
     // == C. パースタスクの定義
 
     #region Custom Tasks
-    public class MethodCallParseTask : UserTask
+    public class MethodCallParseTask : CustomTask
     {
         private readonly MethodCallNode _workingMethodNode;
 
@@ -192,7 +175,7 @@ namespace Parse01
         }
     }
 
-    public class ArgLoopDecisionTask : UserTask // ★ IParseTask から UserTask 継承へ変更
+    public class ArgLoopDecisionTask : CustomTask // ★ IParseTask から UserTask 継承へ変更
     {
         private readonly ValueListNode<int> _argumentsNode;
 
